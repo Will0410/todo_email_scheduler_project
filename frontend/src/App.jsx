@@ -1,20 +1,21 @@
-// src/App.jsx
-import React, { useEffect, useRef, useState } from "react";
+// frontend/src/App.jsx
+import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
-
-import Sidebar from "./components/Sidebar";
-import MobileMenu from "./components/MobileMenu";
-import HamburgerButton from "./components/HamburgerButton";
-import ChatWidget from "./components/ChatWidget";
-
-import { saveAuth, getToken, getUser, clearAuth } from "./utils/auth";
-
 import "./App.css";
 
 /**
- * App.jsx — atualizado com Login/Register JWT (Opção A)
+ * Monolito App.jsx — integra:
+ * - Tarefas (CRUD)
+ * - Chatbot inline + widget
+ * - Painel Admin / Dashboard
+ * - Envio de WhatsApp manual
+ * - Assinaturas (agenda automática)
+ *
+ * Arquitetura: sidebar fixa, conteúdo muda conforme `activePage`.
  */
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:5000";
+
+// ----- CONFIG -----
+const API_BASE = "http://localhost:5000"; // <- ajuste se necessário
 const API_TODOS = `${API_BASE}/todos`;
 const API_AI = `${API_BASE}/api/ai`;
 const API_SEND_WA = `${API_BASE}/api/send-whatsapp`;
@@ -24,9 +25,8 @@ const API_ADMIN_LOGS = `${API_BASE}/api/admin/logs`;
 const API_ADMIN_CONVS = `${API_BASE}/api/admin/conversations`;
 const API_HISTORY = `${API_BASE}/api/history`;
 const API_STATS_OVERVIEW = `${API_BASE}/api/stats/overview`;
-const API_AUTH_LOGIN = `${API_BASE}/api/auth/login`;      // adjust if your backend uses /auth instead of /api/auth
-const API_AUTH_REGISTER = `${API_BASE}/api/auth/register`;
 
+// ----- UTIL -----
 function nowLocalISOStringSlice16() {
   const d = new Date();
   const tz = d.getTimezoneOffset() * 60000;
@@ -37,13 +37,25 @@ function safeJsonParse(str) {
   try { return JSON.parse(str); } catch { return null; }
 }
 
-export default function App() {
-  // layout + navigation
-  const [activePage, setActivePage] = useState("todos");
-  const [mobileOpen, setMobileOpen] = useState(false);
-  const [theme, setTheme] = useState(() => localStorage.getItem("theme") || "dark");
+// Configure axios header if token in localStorage
+const savedToken = localStorage.getItem("token");
+if (savedToken) axios.defaults.headers.common["Authorization"] = `Bearer ${savedToken}`;
 
-  // todos state
+// ----- APP -----
+export default function App() {
+  // UI/navigation
+  const [activePage, setActivePage] = useState("todos"); // todos | dashboard | whatsapp | subs | admin | history | login
+  const [theme, setTheme] = useState(() => localStorage.getItem("theme") || "light");
+
+  // Auth / user (minimal)
+  const [user, setUser] = useState(() => {
+    const u = localStorage.getItem("user");
+    return u ? JSON.parse(u) : null;
+  });
+  const [authForm, setAuthForm] = useState({ email: "", password: "", name: "" });
+  const [authError, setAuthError] = useState("");
+
+  // Todos
   const [todos, setTodos] = useState([]);
   const [editingTodo, setEditingTodo] = useState(null);
   const [input, setInput] = useState({
@@ -58,42 +70,39 @@ export default function App() {
     repeat: "nenhum",
   });
 
-  // chat quick + widget messages
+  // Chatbot
   const [chatInput, setChatInput] = useState("");
   const [chatQuickReply, setChatQuickReply] = useState("");
   const [chatMessages, setChatMessages] = useState([]);
+  const [widgetOpen, setWidgetOpen] = useState(false);
+  const [chatLoading, setChatLoading] = useState(false);
+  const chatBottomRef = useRef(null);
   const [typing, setTyping] = useState(false);
 
-  // widget open controlled inside ChatWidget (but we also can control here)
-  const chatBottomRef = useRef(null);
+  // WA manual
+  const [waForm, setWaForm] = useState({ to: "", text: "" });
+  const [waSending, setWaSending] = useState(false);
 
-  // auth/user
-  const [user, setUser] = useState(() => getUser());
-  const [authError, setAuthError] = useState("");
-
-  // misc admin/subs/history
+  // Subscriptions
   const [mySubs, setMySubs] = useState([]);
+  const [newSub, setNewSub] = useState({ name: "", whatsapp: "", email: "", time: "09:00", repeat: "daily" });
+
+  // Admin / Dashboard
   const [overview, setOverview] = useState(null);
   const [logs, setLogs] = useState([]);
   const [convs, setConvs] = useState([]);
-  const [serverHistory, setServerHistory] = useState([]);
   const [stats, setStats] = useState(null);
 
-  // theme effect
+  // History
+  const [serverHistory, setServerHistory] = useState([]);
+
+  // Theme effect
   useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
+    document.body.setAttribute("data-theme", theme);
     localStorage.setItem("theme", theme);
   }, [theme]);
 
-  // set axios auth header if token exists on app start
-  useEffect(() => {
-    const token = getToken();
-    if (token) axios.defaults.headers.common["Authorization"] = `Bearer ${token}`;
-  }, []);
-
-  // load todos
-  useEffect(() => { loadTodos(); }, []);
-
+  // ----- TODOS functions -----
   async function loadTodos() {
     try {
       const res = await axios.get(API_TODOS);
@@ -103,13 +112,15 @@ export default function App() {
       setTodos([]);
     }
   }
+  useEffect(() => { loadTodos(); }, []);
 
-  // todo form handlers
   function addTag() {
     if (!input.tagInput || !input.tagInput.trim()) return;
     setInput(prev => ({ ...prev, tags: [...prev.tags, prev.tagInput.trim()], tagInput: "" }));
   }
-  function removeTag(tag) { setInput(prev => ({ ...prev, tags: prev.tags.filter(t => t !== tag) })); }
+  function removeTag(tag) {
+    setInput(prev => ({ ...prev, tags: prev.tags.filter(t => t !== tag) }));
+  }
   function resetForm() {
     setEditingTodo(null);
     setInput({
@@ -155,19 +166,38 @@ export default function App() {
       repeat: todo.repeat || "nenhum"
     });
     setActivePage("todos");
-    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  async function handleRemove(id) { try { await axios.delete(`${API_TODOS}/${id}`); loadTodos(); } catch (err) { console.error(err); } }
-  async function toggleCompleted(id, current) { try { await axios.put(`${API_TODOS}/${id}`, { completed: !current }); loadTodos(); } catch (err) { console.error(err); } }
+  async function handleRemove(id) {
+    try { await axios.delete(`${API_TODOS}/${id}`); loadTodos(); } catch (err) { console.error("Erro ao remover:", err); }
+  }
+  async function toggleCompleted(id, current) {
+    try { await axios.put(`${API_TODOS}/${id}`, { completed: !current }); loadTodos(); } catch (err) { console.error(err); }
+  }
 
-  // AI quick ask (auto call while typing)
+  // Quick reminder actions
+  async function sendReminderWhatsApp(todo) {
+    const text = `Lembrete: ${todo.title}\n${todo.description || ""}`;
+    try {
+      await axios.post(API_SEND_WA, { to: todo.whatsapp || todo.phone || "", text });
+      alert("Enfileirado envio WhatsApp.");
+    } catch (err) { console.error(err); alert("Erro ao enfileirar WA"); }
+  }
+  async function sendReminderEmail(todo) {
+    try {
+      const payload = { action: "send_email", to: todo.email, subject: `Lembrete: ${todo.title}`, text: todo.description || "" };
+      await axios.post(API_AI, { message: JSON.stringify(payload) });
+      alert("Email agendado/enfileirado.");
+    } catch (err) { console.error(err); alert("Erro ao agendar email"); }
+  }
+
+  // ----- CHATBOT functions -----
   useEffect(() => {
-    if (!chatInput.trim()) { setChatQuickReply(""); return; }
-    const timer = setTimeout(() => askAIInline(chatInput), 650);
+    if (!chatInput.trim()) { if (!widgetOpen) setChatQuickReply(""); return; }
+    if (widgetOpen) return;
+    const timer = setTimeout(() => askAIInline(chatInput), 600);
     return () => clearTimeout(timer);
-    // eslint-disable-next-line
-  }, [chatInput]);
+  }, [chatInput, widgetOpen]);
 
   async function askAIInline(text) {
     if (!text || !text.trim()) return;
@@ -179,17 +209,15 @@ export default function App() {
       const json = safeJsonParse(reply);
       if (json && json.action) handleAIAction(json);
     } catch (err) {
-      console.error("askAIInline error:", err);
       setChatQuickReply("❌ Erro ao se comunicar com a IA.");
-    } finally {
-      setTyping(false);
-    }
+      console.error(err);
+    } finally { setTyping(false); }
   }
 
-  // chat widget explicit send
-  async function sendChatMessage(text) {
-    if (!text || !text.trim()) return;
+  async function sendChatMessage() {
+    const text = chatInput.trim(); if (!text) return;
     setChatMessages(m => [...m, { role: "user", text }]);
+    setChatInput(""); setChatLoading(true);
     try {
       const res = await axios.post(API_AI, { message: text });
       const reply = res.data?.reply || "—";
@@ -197,167 +225,158 @@ export default function App() {
       const json = safeJsonParse(reply);
       if (json && json.action) handleAIAction(json);
     } catch (err) {
-      console.error("sendChatMessage err:", err);
-      setChatMessages(m => [...m, { role: "bot", text: "❌ Erro ao falar com a IA." }]);
-    } finally {
-      chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
-    }
+      console.error("Chat error:", err);
+      setChatMessages(m => [...m, { role: "bot", text: "❌ Erro ao se comunicar com a IA." }]);
+    } finally { setChatLoading(false); }
   }
+
+  useEffect(() => { chatBottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatMessages, chatLoading]);
 
   async function handleAIAction(json) {
     try {
       if (json.action === "send_whatsapp") {
-        if (!json.to || json.body === undefined) { alert("IA pediu WA mas faltam campos"); return; }
+        if (!json.to || json.body === undefined) { alert("IA pediu envio WA, faltam campos"); return; }
         const r = await axios.post(API_SEND_WA, { to: json.to, text: json.body });
-        setChatMessages(m => [...m, { role: "bot", text: `📱 WA enfileirado (logId: ${r.data.logId||"-"})` }]);
+        setChatMessages(m => [...m, { role: "bot", text: `📱 Enfileirado envio WA (logId: ${r.data.logId || "-"})` }]);
       } else if (json.action === "send_email") {
-        // forward to AI route which handles sending
         const forward = await axios.post(API_AI, { message: JSON.stringify(json) });
         setChatMessages(m => [...m, { role: "bot", text: forward.data.reply }]);
       } else if (json.action === "schedule_daily") {
-        await axios.post(API_SUBS, { name: json.name || "Auto", whatsapp: json.whatsapp, email: json.email, time: json.time || "09:00" });
-        setChatMessages(m => [...m, { role: "bot", text: "✅ Assinatura criada." }]);
-        loadMySubs();
+        try { await axios.post(API_SUBS, { name: json.name || "Auto", whatsapp: json.whatsapp, email: json.email, time: json.time || "09:00" }); loadMySubs(); setChatMessages(m => [...m, { role: "bot", text: "✅ Assinatura criada." }]); }
+        catch (err) { setChatMessages(m => [...m, { role: "bot", text: "⚠️ Falha ao criar assinatura." }]); }
       } else {
         setChatMessages(m => [...m, { role: "bot", text: `Ação desconhecida: ${json.action}` }]);
       }
     } catch (err) {
-      console.error("handleAIAction:", err);
-      setChatMessages(m => [...m, { role: "bot", text: "⚠️ Falha ao executar ação solicitada pela IA." }]);
+      console.error("handleAIAction error:", err);
     }
   }
 
-  // send WhatsApp quick (for a todo)
-  async function sendReminderWhatsApp(todo) {
-    const text = `Lembrete: ${todo.title}\n${todo.description || ""}`;
+  // ----- WHATSAPP manual -----
+  async function sendWhatsAppManual(e) {
+    e && e.preventDefault();
+    if (!waForm.to || !waForm.text) { alert("Preencha número e texto"); return; }
     try {
-      await axios.post(API_SEND_WA, { to: todo.whatsapp || todo.phone || "", text });
-      alert("Enfileirado envio WhatsApp.");
-    } catch (err) { console.error(err); alert("Erro ao enfileirar WA"); }
+      setWaSending(true);
+      const r = await axios.post(API_SEND_WA, { to: waForm.to, text: waForm.text });
+      alert(`Enfileirado (logId: ${r.data.logId || "-"})`);
+      setWaForm({ to: "", text: "" });
+    } catch (err) {
+      console.error("sendWA error:", err);
+      alert("Erro ao enfileirar WhatsApp");
+    } finally { setWaSending(false); }
   }
 
-  // send email quick (via AI route which expects JSON action)
-  async function sendReminderEmail(todo) {
-    try {
-      const payload = { action: "send_email", to: todo.email, subject: `Lembrete: ${todo.title}`, text: todo.description || "" };
-      const res = await axios.post(API_AI, { message: JSON.stringify(payload) });
-      alert(res.data?.reply || "Solicitação enviada");
-    } catch (err) { console.error(err); alert("Erro ao enviar email"); }
-  }
-
-  // subscriptions
+  // ----- SUBSCRIPTIONS -----
   async function loadMySubs() {
     try { const r = await axios.get(API_SUBS); setMySubs(r.data || []); } catch (err) { console.error(err); setMySubs([]); }
   }
-  async function createSubscription(data) {
-    try { await axios.post(API_SUBS, data); loadMySubs(); alert("Assinatura criada"); } catch (err) { console.error(err); alert("Erro ao criar"); }
+  async function createSubscription(e) {
+    e.preventDefault();
+    try { await axios.post(API_SUBS, newSub); setNewSub({ name: "", whatsapp: "", email: "", time: "09:00", repeat: "daily" }); loadMySubs(); alert("Assinatura criada."); } catch (err) { console.error(err); alert("Erro ao criar assinatura"); }
   }
 
-  // admin / dashboard / history loaders (basic)
-  async function loadAdminOverview(){ try { const r = await axios.get(API_ADMIN_OVERVIEW); setOverview(r.data); } catch(e){ console.error(e); } }
-  async function loadAdminLogs(){ try { const r = await axios.get(API_ADMIN_LOGS); setLogs(r.data||[]); } catch(e){ console.error(e); } }
-  async function loadConvs(){ try { const r = await axios.get(API_ADMIN_CONVS); setConvs(r.data||[]); } catch(e){ console.error(e); } }
-  async function loadHistory(){ try { const r = await axios.get(API_HISTORY + "?limit=100"); setServerHistory(r.data||[]); } catch(e){ console.error(e); } }
-  async function loadStats(){ try { const r = await axios.get(API_STATS_OVERVIEW); setStats(r.data); } catch(e){ console.error(e); } }
+  // ----- ADMIN / STATS -----
+  async function loadAdminOverview() {
+    try { const r = await axios.get(API_ADMIN_OVERVIEW); setOverview(r.data); } catch (err) { console.error(err); setOverview(null); }
+  }
+  async function loadAdminLogs() { try { const r = await axios.get(API_ADMIN_LOGS); setLogs(r.data || []); } catch (err) { console.error(err); setLogs([]); } }
+  async function loadConvs() { try { const r = await axios.get(API_ADMIN_CONVS); setConvs(r.data || []); } catch (err) { console.error(err); setConvs([]); } }
+  async function loadStats() { try { const r = await axios.get(API_STATS_OVERVIEW); setStats(r.data); } catch (err) { console.error(err); setStats(null); } }
 
-  // ----- AUTH (login/register/logout) -----
-  async function handleLoginRequest(email, password) {
+  // ----- HISTORY -----
+  async function loadHistory() { try { const r = await axios.get(API_HISTORY + "?limit=100"); setServerHistory(r.data || []); } catch (err) { console.error(err); setServerHistory([]); } }
+
+  // ----- AUTH (basic login/register) -----
+  async function handleLogin(e) {
+    e.preventDefault();
     setAuthError("");
     try {
-      const r = await axios.post(API_AUTH_LOGIN, { email, password });
-      const token = r.data.token || r.data?.token;
-      const u = r.data.user || r.data?.user;
-      if (!token || !u) throw new Error("Resposta inválida do servidor");
-      saveAuth({ token, user: u });
-      axios.defaults.headers.common["Authorization"] = `Bearer ${token}`;
-      setUser(u);
+      const r = await axios.post(`${API_BASE}/api/auth/login`, { email: authForm.email, password: authForm.password });
+      localStorage.setItem("token", r.data.token);
+      axios.defaults.headers.common["Authorization"] = `Bearer ${r.data.token}`;
+      localStorage.setItem("user", JSON.stringify(r.data.user));
+      setUser(r.data.user);
       setActivePage("todos");
-      return { ok: true };
+      setAuthForm({ email: "", password: "", name: "" });
     } catch (err) {
       console.error("login error:", err);
-      const msg = err.response?.data?.error || err.message || "Falha no login";
-      setAuthError(msg);
-      return { ok: false, error: msg };
+      setAuthError(err.response?.data?.error || "Falha no login");
     }
   }
-
-  async function handleRegisterRequest(name, email, password) {
+  async function handleRegister(e) {
+    e.preventDefault();
     setAuthError("");
     try {
-      const r = await axios.post(API_AUTH_REGISTER, { name, email, password });
-      // some backends return user directly, others return { token, user }
-      // try login after register
-      const login = await handleLoginRequest(email, password);
-      if (!login.ok) throw new Error(login.error || "Registro OK mas falha no login automático");
-      return { ok: true };
+      const r = await axios.post(`${API_BASE}/api/auth/register`, { email: authForm.email, password: authForm.password, name: authForm.name });
+      localStorage.setItem("token", r.data.token);
+      axios.defaults.headers.common["Authorization"] = `Bearer ${r.data.token}`;
+      localStorage.setItem("user", JSON.stringify(r.data.user));
+      setUser(r.data.user);
+      setActivePage("todos");
+      setAuthForm({ email: "", password: "", name: "" });
     } catch (err) {
       console.error("register error:", err);
-      const msg = err.response?.data?.error || err.message || "Falha no registro";
-      setAuthError(msg);
-      return { ok: false, error: msg };
+      setAuthError(err.response?.data?.error || "Falha no register");
     }
   }
-
   function handleLogout() {
-    clearAuth();
-    delete axios.defaults.headers.common["Authorization"];
-    setUser(null);
-    setActivePage("login");
+    localStorage.removeItem("token"); delete axios.defaults.headers.common["Authorization"]; localStorage.removeItem("user"); setUser(null); setActivePage("login");
   }
 
-  // Protect pages: redirect to login if not authenticated
-  const privatePages = ["todos", "dashboard", "whatsapp", "subs", "admin", "history"];
+  // Load data when changing pages
   useEffect(() => {
-    if (!user && privatePages.includes(activePage)) setActivePage("login");
-    // eslint-disable-next-line
-  }, [user, activePage]);
+    if (activePage === "admin") { loadAdminOverview(); loadAdminLogs(); loadConvs(); }
+    if (activePage === "stats") loadStats();
+    if (activePage === "subs") loadMySubs();
+    if (activePage === "history") loadHistory();
+    // always refresh todos on todos view
+    if (activePage === "todos") loadTodos();
+  }, [activePage]);
 
-  // ----- UI Components (inline small helpers) -----
-  function Topbar() {
+  // ----- RENDER PIECES -----
+  function Sidebar() {
     return (
-      <header className="topbar">
-        <div className="brand">
-          <div className="logo-square">AI</div>
-          <div className="brand-text">
-            <h1>Todo+AI</h1>
-            <small>Organização • Inteligência</small>
-          </div>
+      <aside className="sidebar glass">
+        <div className="sidebar-top">
+          <div className="logo">AI</div>
+          <h3>Todo+AI</h3>
         </div>
 
-        <div className="top-actions">
-          <button className="btn tiny" onClick={() => { setActivePage("dashboard"); loadStats(); }}>Dashboard</button>
-          <button className="theme-toggle" onClick={() => setTheme(t => t==="dark"?"light":"dark")}>{theme==="dark"?"☀️":"🌙"}</button>
-          <HamburgerButton onClick={() => setMobileOpen(true)} />
-        </div>
-      </header>
+        <nav className="sidebar-nav">
+          <button className={activePage==="todos" ? "active" : ""} onClick={() => setActivePage("todos")}>📋 Tarefas</button>
+          <button className={activePage==="dashboard" ? "active" : ""} onClick={() => setActivePage("dashboard")}>📊 Dashboard</button>
+          <button className={activePage==="whatsapp" ? "active" : ""} onClick={() => setActivePage("whatsapp")}>📨 WhatsApp</button>
+          <button className={activePage==="subs" ? "active" : ""} onClick={() => setActivePage("subs")}>⏰ Assinaturas</button>
+          <button className={activePage==="history" ? "active" : ""} onClick={() => setActivePage("history")}>📜 Histórico IA</button>
+          <button className={activePage==="admin" ? "active" : ""} onClick={() => setActivePage("admin")}>🛠️ Admin</button>
+          <button className={activePage==="login" ? "active" : ""} onClick={() => setActivePage("login")}>{user ? "Perfil" : "Entrar"}</button>
+          <div style={{ marginTop: 12 }}>
+            <button className="theme-toggle" onClick={() => setTheme(t => t==="light"?"dark":"light")}>{theme==="light"?"🌙":"☀️"}</button>
+            {user && <button className="btn tiny" onClick={handleLogout} style={{ marginLeft: 8 }}>Sair</button>}
+          </div>
+        </nav>
+      </aside>
     );
   }
-
-  // ... (TodosView, DashboardView, WhatsAppView, SubsView, AdminView, HistoryView)
-  // For brevity reuse your existing view functions (they are unchanged)
-  // Insert the view functions you already have below or keep the ones from your original App.jsx
-  // I'll re-use the same TodosView, DashboardView, WhatsAppView, SubsView, AdminView, HistoryView from your original code:
-  // (Paste them here or rely on earlier code — since you submitted your App.jsx before, those functions remain the same.)
-  // For the user's convenience I will include TodosView and LoginRegisterView below, and keep other views referenced similarly.
 
   function TodosView() {
     return (
       <div className="content-panel">
         <h2>{editingTodo ? "Editar tarefa" : "Nova tarefa"}</h2>
         <form className="task-form" onSubmit={handleSubmit}>
-          <div className="field"><label>Título</label><input value={input.title} onChange={e => setInput({...input, title: e.target.value})} required /></div>
-          <div className="field"><label>Descrição</label><textarea value={input.description} onChange={e => setInput({...input, description: e.target.value})} /></div>
+          <div className="field"><span>Título</span><input value={input.title} onChange={e => setInput({...input, title: e.target.value})} required /></div>
+          <div className="field"><span>Descrição</span><textarea value={input.description} onChange={e => setInput({...input, description: e.target.value})} /></div>
+          <div className="field"><span>Email</span><input type="email" value={input.email} onChange={e => setInput({...input, email: e.target.value})} /></div>
+          <div className="field"><span>WhatsApp</span><input placeholder="5511999999999" value={input.whatsapp} onChange={e => setInput({...input, whatsapp: e.target.value})} /></div>
           <div className="two-col">
-            <div className="field"><label>Email</label><input type="email" value={input.email} onChange={e => setInput({...input, email: e.target.value})} /></div>
-            <div className="field"><label>WhatsApp</label><input placeholder="5511999999999" value={input.whatsapp} onChange={e => setInput({...input, whatsapp: e.target.value})} /></div>
+            <div className="field"><span>Data limite</span><input type="datetime-local" value={input.due} min={nowLocalISOStringSlice16()} onChange={e => setInput({...input, due: e.target.value})} required /></div>
+            <div className="field"><span>Prioridade</span><select value={input.priority} onChange={e => setInput({...input, priority: e.target.value})}><option>Alta</option><option>Média</option><option>Baixa</option></select></div>
           </div>
-          <div className="two-col">
-            <div className="field"><label>Data limite</label><input type="datetime-local" value={input.due} min={nowLocalISOStringSlice16()} onChange={e => setInput({...input, due: e.target.value})} required /></div>
-            <div className="field"><label>Prioridade</label><select value={input.priority} onChange={e => setInput({...input, priority: e.target.value})}><option>Alta</option><option>Média</option><option>Baixa</option></select></div>
-          </div>
+          <div className="field"><span>Repetição</span><select value={input.repeat} onChange={e => setInput({...input, repeat: e.target.value})}><option value="nenhum">Nenhum</option><option value="diario">Diário</option><option value="semanal">Semanal</option><option value="mensal">Mensal</option></select></div>
 
           <div className="tags-row">
-            {input.tags.map((t,i) => <div key={i} className="tag" onClick={() => removeTag(t)}>{t} ✖</div>)}
+            {input.tags.map((tag,i) => <div key={i} className="tag" onClick={() => removeTag(tag)}>{tag} ✖</div>)}
             <input className="tag-input" placeholder="Adicionar tag" value={input.tagInput} onChange={e => setInput({...input, tagInput: e.target.value})} />
             <button type="button" className="btn tiny primary" onClick={addTag}>+</button>
           </div>
@@ -370,7 +389,7 @@ export default function App() {
 
         <hr />
 
-        <h3>Tarefas</h3>
+        <h2>Tarefas</h2>
         <ul className="todo-list">
           {todos.map(todo => (
             <li key={todo._id} className="todo-item">
@@ -383,13 +402,13 @@ export default function App() {
                     <span className="muted">📧 {todo.email || "—"}</span>
                     <span className="muted">📱 {todo.whatsapp || "—"}</span>
                     <span className="pill">{todo.priority}</span>
-                    {(todo.tags||[]).map((t,i)=> <span key={i} className="pill">#{t}</span>)}
+                    {todo.tags?.map((t,i) => <span key={i} className="pill">#{t}</span>)}
                     <span className="muted">📅 {todo.due ? new Date(todo.due).toLocaleString() : "—"}</span>
                   </div>
                 </div>
               </div>
 
-              <div className="todo-actions">
+              <div style={{ display: "flex", gap: 8 }}>
                 <button className="btn small primary" onClick={() => toggleCompleted(todo._id, todo.completed)}>{todo.completed ? "Desmarcar" : "Concluir"}</button>
                 <button className="btn small ghost" onClick={() => handleEdit(todo)}>Editar</button>
                 <button className="btn small ghost" onClick={() => handleRemove(todo._id)}>Excluir</button>
@@ -400,133 +419,220 @@ export default function App() {
           ))}
         </ul>
 
-        <div className="ai-inline">
-          <input placeholder="Pergunte algo..." value={chatInput} onChange={e => setChatInput(e.target.value)} />
+        {/* Inline assistant quick */}
+        <div style={{ marginTop: 12 }}>
+          <input value={chatInput} onChange={e => setChatInput(e.target.value)} placeholder="Pergunte algo..." />
           <button className="btn primary" onClick={() => askAIInline(chatInput)}>{typing ? "..." : "Enviar"}</button>
-          {chatQuickReply && <div className="ai-quick-reply">{chatQuickReply}</div>}
+          {chatQuickReply && <div className="ai-quick-reply" style={{ marginTop: 8 }}>{chatQuickReply}</div>}
         </div>
       </div>
     );
   }
 
-  // LOGIN + REGISTER view (component included inside App for simplicity)
-  function LoginRegisterView() {
-    const [mode, setMode] = useState("login"); // "login" | "register"
-    const [name, setName] = useState("");
-    const [email, setEmail] = useState("");
-    const [password, setPassword] = useState("");
-    const [loading, setLoading] = useState(false);
-    const [localError, setLocalError] = useState("");
-
-    useEffect(() => {
-      setLocalError(authError || "");
-    }, [authError]);
-
-    async function onSubmitLogin(e) {
-      e.preventDefault();
-      setLocalError("");
-      setLoading(true);
-      const res = await handleLoginRequest(email, password);
-      setLoading(false);
-      if (!res.ok) setLocalError(res.error || "Erro ao logar");
-    }
-
-    async function onSubmitRegister(e) {
-      e.preventDefault();
-      setLocalError("");
-      if (!name || !email || !password) { setLocalError("Preencha todos os campos"); return; }
-      setLoading(true);
-      const res = await handleRegisterRequest(name, email, password);
-      setLoading(false);
-      if (!res.ok) setLocalError(res.error || "Erro ao registrar");
-    }
-
+  function DashboardView() {
     return (
-      <div className="content-panel auth-panel" style={{ maxWidth: 480 }}>
-        <h2>{mode === "login" ? "Entrar" : "Criar Conta"}</h2>
+      <div className="content-panel">
+        <h2>📊 Dashboard</h2>
+        <button className="btn tiny" onClick={() => { loadAdminOverview(); loadStats(); }}>Atualizar</button>
 
-        <div className="auth-tabs" style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-          <button className={mode === "login" ? "btn primary" : "btn"} onClick={() => setMode("login")}>Entrar</button>
-          <button className={mode === "register" ? "btn primary" : "btn"} onClick={() => setMode("register")}>Registrar</button>
+        <div style={{ display: "flex", gap: 12, marginTop: 12 }}>
+          <div className="panel glass" style={{ flex: 1 }}>
+            <h4>Overview</h4>
+            {overview ? (
+              <div>
+                <div>Total logs: {overview.total}</div>
+                <div>Enviadas: {overview.sent}</div>
+                <div>Falhas: {overview.failed}</div>
+                <div>Retrying: {overview.retrying}</div>
+                <div>Conversas: {overview.convs}</div>
+                <div>Subscriptions: {overview.subs}</div>
+              </div>
+            ) : <div>Sem dados</div>}
+          </div>
+
+          <div className="panel glass" style={{ flex: 1 }}>
+            <h4>Estatísticas</h4>
+            {stats ? (
+              <div>
+                <div>Tarefas ativas: {stats.active}</div>
+                <div>Concluídas: {stats.completed}</div>
+              </div>
+            ) : <div>Nenhuma stat carregada</div>}
+          </div>
         </div>
+      </div>
+    );
+  }
 
-        {localError && <div style={{ color: "red", marginBottom: 8 }}>{localError}</div>}
+  function WhatsAppView() {
+    return (
+      <div className="content-panel">
+        <h2>📨 Enviar WhatsApp</h2>
+        <form onSubmit={sendWhatsAppManual}>
+          <div className="field"><span>Para</span><input value={waForm.to} onChange={e => setWaForm(f => ({...f, to: e.target.value}))} placeholder="5511999999999" /></div>
+          <div className="field"><span>Mensagem</span><textarea value={waForm.text} onChange={e => setWaForm(f => ({...f, text: e.target.value}))} /></div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn primary" type="submit" disabled={waSending}>{waSending ? "Enviando..." : "Enviar"}</button>
+            <button className="btn" type="button" onClick={() => setWaForm({to:"", text:""})}>Limpar</button>
+          </div>
+        </form>
+      </div>
+    );
+  }
 
-        {mode === "login" ? (
-          <form onSubmit={onSubmitLogin} style={{ display: "grid", gap: 8 }}>
-            <input placeholder="Email" type="email" value={email} onChange={e=>setEmail(e.target.value)} required />
-            <input placeholder="Senha" type="password" value={password} onChange={e=>setPassword(e.target.value)} required />
-            <div style={{ display: "flex", gap: 8 }}>
-              <button className="btn primary" type="submit" disabled={loading}>{loading ? "Entrando..." : "Entrar"}</button>
-              <button type="button" className="btn" onClick={() => { setMode("register"); setLocalError(""); }}>Registrar</button>
+  function SubsView() {
+    return (
+      <div className="content-panel">
+        <h2>⏰ Assinaturas</h2>
+        <form onSubmit={createSubscription} style={{ display: "grid", gap: 8, maxWidth: 600 }}>
+          <input placeholder="Nome" value={newSub.name} onChange={e => setNewSub(s => ({...s, name: e.target.value}))} />
+          <input placeholder="WhatsApp" value={newSub.whatsapp} onChange={e => setNewSub(s => ({...s, whatsapp: e.target.value}))} />
+          <input placeholder="Email" value={newSub.email} onChange={e => setNewSub(s => ({...s, email: e.target.value}))} />
+          <div style={{ display: "flex", gap: 8 }}>
+            <input type="time" value={newSub.time} onChange={e => setNewSub(s => ({...s, time: e.target.value}))} />
+            <select value={newSub.repeat} onChange={e => setNewSub(s => ({...s, repeat: e.target.value}))}>
+              <option value="daily">Diário</option><option value="weekly">Semanal</option><option value="monthly">Mensal</option>
+            </select>
+            <button className="btn primary" type="submit">Criar</button>
+          </div>
+        </form>
+
+        <div style={{ marginTop: 12 }}>
+          <button className="btn tiny" onClick={loadMySubs}>Atualizar assinaturas</button>
+          <ul>
+            {mySubs.map(s => <li key={s._id}>{s.name} • {s.email} • {s.whatsapp} • {s.time} • {s.repeat}</li>)}
+          </ul>
+        </div>
+      </div>
+    );
+  }
+
+  function AdminView() {
+    return (
+      <div className="content-panel">
+        <h2>🛠️ Admin</h2>
+        <div style={{ display: "flex", gap: 12 }}>
+          <div style={{ flex: 1 }} className="panel glass">
+            <h4>Últimos Logs</h4>
+            <button className="btn tiny" onClick={loadAdminLogs}>Atualizar Logs</button>
+            <ul style={{ maxHeight: 300, overflowY: "auto" }}>{logs.map(l => <li key={l._id}>{l.channel} → {l.to} • {l.status} • {l.attempts}</li>)}</ul>
+          </div>
+
+          <div style={{ flex: 1 }} className="panel glass">
+            <h4>Conversas</h4>
+            <button className="btn tiny" onClick={loadConvs}>Atualizar</button>
+            <ul style={{ maxHeight: 300, overflowY: "auto" }}>{convs.map(c => <li key={c._id}>{new Date(c.createdAt).toLocaleString()} • {c.role}: {String(c.message).slice(0,200)}</li>)}</ul>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function HistoryView() {
+    return (
+      <div className="content-panel">
+        <h2>📜 Histórico IA (Server)</h2>
+        <button className="btn tiny" onClick={loadHistory}>Atualizar</button>
+        <ul>{serverHistory.map(h => <li key={h._id}>{new Date(h.createdAt).toLocaleString()} • {h.role}: {String(h.message).slice(0,200)}</li>)}</ul>
+      </div>
+    );
+  }
+
+  function LoginView() {
+    return (
+      <div className="content-panel">
+        <h2>Entrar / Registrar</h2>
+        <form onSubmit={handleLogin} style={{ display: "grid", gap: 8, maxWidth: 420 }}>
+          <input placeholder="email" value={authForm.email} onChange={e => setAuthForm(f => ({...f, email: e.target.value}))} />
+          <input placeholder="senha" type="password" value={authForm.password} onChange={e => setAuthForm(f => ({...f, password: e.target.value}))} />
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn primary" type="submit">Entrar</button>
+            <button className="btn" type="button" onClick={handleRegister}>Registrar</button>
+          </div>
+          {authError && <div style={{ color: "red" }}>{authError}</div>}
+        </form>
+      </div>
+    );
+  }
+
+  // Chat widget bottom/right (persistent)
+  function ChatWidget() {
+    return (
+      <div className="widget-wrap">
+        {widgetOpen && (
+          <div className="glass-widget">
+            <div className="widget-head">
+              <div className="avatar neon">AI</div>
+              <div>
+                <div className="widget-title">Assistente</div>
+                <div className="widget-sub">Pronto para ajudar</div>
+              </div>
+              <div className="widget-controls">
+                <button className="icon-btn" onClick={() => setChatMessages([])}>Limpar</button>
+                <button className="icon-btn" onClick={() => setWidgetOpen(false)}>✕</button>
+              </div>
             </div>
-          </form>
-        ) : (
-          <form onSubmit={onSubmitRegister} style={{ display: "grid", gap: 8 }}>
-            <input placeholder="Nome" value={name} onChange={e=>setName(e.target.value)} required />
-            <input placeholder="Email" type="email" value={email} onChange={e=>setEmail(e.target.value)} required />
-            <input placeholder="Senha" type="password" value={password} onChange={e=>setPassword(e.target.value)} required />
-            <div style={{ display: "flex", gap: 8 }}>
-              <button className="btn primary" type="submit" disabled={loading}>{loading ? "Registrando..." : "Registrar"}</button>
-              <button type="button" className="btn" onClick={() => { setMode("login"); setLocalError(""); }}>Voltar</button>
+
+            <div className="widget-body">
+              {chatMessages.length === 0 && <div className="widget-empty">Diga algo para começar!</div>}
+              <div className="messages">
+                {chatMessages.map((m,i) => <div key={i} className={`msg ${m.role === "user" ? "msg-user" : "msg-bot"}`}>{m.text}</div>)}
+                <div ref={chatBottomRef} />
+              </div>
             </div>
-          </form>
+
+            <div className="widget-input">
+              <textarea value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChatMessage(); }}} />
+              <div className="widget-input-actions">
+                <button className="btn primary" onClick={sendChatMessage} disabled={chatLoading}>{chatLoading ? "..." : "Enviar"}</button>
+              </div>
+            </div>
+          </div>
         )}
 
-        <div style={{ marginTop: 12, color: "#999", fontSize: 13 }}>
-          Ao registrar, você será autenticado automaticamente.
-        </div>
+        <button className="floating-btn" onClick={() => setWidgetOpen(w => !w)}>
+          <div className="floating-avatar">AI</div>
+        </button>
       </div>
     );
   }
 
-  // Minimal placeholders for other views (keep yours if you prefer)
-  function DashboardView(){ return (<div className="content-panel"><h2>📊 Dashboard</h2><div style={{display:"flex",gap:12}}><div className="panel glass" style={{flex:1}}>{overview ? (<div><div>Total logs: {overview.total}</div><div>Enviadas: {overview.sent}</div><div>Falhas: {overview.failed}</div></div>) : <div>Sem dados</div>}</div><div className="panel glass" style={{flex:1}}>{stats ? <div><div>Ativas: {stats.active}</div><div>Completas: {stats.completed}</div></div> : <div>—</div>}</div></div></div>); }
-  function WhatsAppView(){ return (<div className="content-panel"><h2>📨 Enviar WhatsApp</h2><div>Use o formulário de envio</div></div>); }
-  function SubsView(){ return (<div className="content-panel"><h2>⏰ Assinaturas</h2><div>Minhas assinaturas</div></div>); }
-  function AdminView(){ return (<div className="content-panel"><h2>🛠️ Admin</h2><div>Admin</div></div>); }
-  function HistoryView(){ return (<div className="content-panel"><h2>📜 Histórico IA</h2><div>Histórico</div></div>); }
-  function ProfileView(){ return (<div className="content-panel"><h2>👤 Perfil</h2><div>{user ? `${user.name} • ${user.email}` : "Não logado"}</div></div>); }
-
-  // final render
+  // ----- MAIN RENDER -----
   return (
-    <div className="app-root">
-      <Sidebar
-        active={activePage}
-        onNavigate={p=>{ setActivePage(p); setMobileOpen(false); }}
-        theme={theme}
-        onToggleTheme={()=>setTheme(t=>t==="dark"?"light":"dark")}
-        user={user}
-        onLogout={handleLogout}
-      />
+    <>
+      <div className="app-glow" />
+      <div className="container main-layout">
+        <Sidebar />
 
-      <MobileMenu
-        open={mobileOpen}
-        onClose={()=>setMobileOpen(false)}
-        active={activePage}
-        onNavigate={p=>{ setActivePage(p); setMobileOpen(false); }}
-        user={user}
-        onLogout={handleLogout}
-      />
+        <main className="main-content">
+          {/* Topbar */}
+          <div className="topbar">
+            <div className="brand">
+              <div className="logo">AI</div>
+              <div className="brand-text"><h1>Todo+AI</h1><span>Organização • Inteligência</span></div>
+            </div>
 
-      <div className="main-shell">
-        <Topbar />
-        <div className="page-body">
-          {activePage === "todos" && <TodosView />}
-          {activePage === "dashboard" && <DashboardView />}
-          {activePage === "whatsapp" && <WhatsAppView />}
-          {activePage === "subs" && <SubsView />}
-          {activePage === "admin" && <AdminView />}
-          {activePage === "history" && <HistoryView />}
-          {activePage === "login" && !user && <LoginRegisterView />}
-          {activePage === "profile" && user && <ProfileView />}
-          {!user && activePage !== "login" && privatePages.includes(activePage) && (
-            <div style={{ padding: 24 }}>Você precisa entrar para acessar esta página.</div>
-          )}
-        </div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              {user ? <div style={{ marginRight: 8 }}>{user.name || user.email}</div> : <div>Não logado</div>}
+              <button className="btn tiny" onClick={() => { setActivePage("dashboard"); }}>Dashboard</button>
+              <button className="theme-toggle" onClick={() => setTheme(t => t==="light"?"dark":"light")}>{theme==="light"?"🌙":"☀️"}</button>
+            </div>
+          </div>
+
+          {/* content selector */}
+          <div className="content-area">
+            {activePage === "todos" && <TodosView />}
+            {activePage === "dashboard" && <DashboardView />}
+            {activePage === "whatsapp" && <WhatsAppView />}
+            {activePage === "subs" && <SubsView />}
+            {activePage === "admin" && <AdminView />}
+            {activePage === "history" && <HistoryView />}
+            {activePage === "login" && <LoginView />}
+          </div>
+        </main>
+
+        <ChatWidget />
       </div>
-
-      <ChatWidget messages={chatMessages} onSend={sendChatMessage} bottomRef={chatBottomRef} />
-    </div>
+    </>
   );
 }
