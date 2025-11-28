@@ -1,4 +1,7 @@
-// server.js - Backend principal (ATUALIZADO 2025)
+// ================================
+// server.js - Backend principal
+// VERSÃO FINAL PARA RENDER + VITE + IA + EMAIL + WHATSAPP
+// ================================
 
 import dotenv from "dotenv";
 dotenv.config();
@@ -10,11 +13,17 @@ import cron from "node-cron";
 import nodemailer from "nodemailer";
 import axios from "axios";
 import path from "path";
+import { fileURLToPath } from "url";
 
+// Corrigir __dirname em ES Modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// ================================
+// IMPORTS DO PROJETO
+// ================================
 import Todo from "./models/Todo.js";
 import aiChatbot from "./routes/aiChatbot.js";
-
-// novos imports existentes do seu projeto
 import authRoutes from "./routes/auth.js";
 import subsRoutes from "./routes/subscriptions.js";
 import historyRoutes from "./routes/history.js";
@@ -23,6 +32,9 @@ import statsRoutes from "./routes/stats.js";
 import DeliveryLog from "./models/DeliveryLog.js";
 import { sendWithRetry } from "./services/deliveryService.js";
 
+// ================================
+// EXPRESS
+// ================================
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -37,17 +49,19 @@ app.use("/api/history", historyRoutes);
 app.use("/api/stats", statsRoutes);
 
 // ================================
-// SERVE FRONTEND (CORRIGIDO)
+// FRONTEND (VITE build /dist)
 // ================================
-const __dirname = path.resolve();
-
 if (process.env.NODE_ENV === "production") {
-  console.log("📦 SERVING FRONTEND BUILD...");
+  console.log("📦 Servindo frontend da pasta /frontend/dist");
 
-  app.use(express.static(path.join(__dirname, "frontend", "build")));
+  const frontendPath = path.join(__dirname, "..", "frontend", "dist");
 
+  // Arquivos estáticos
+  app.use(express.static(frontendPath));
+
+  // Enviar index.html em rotas não-API
   app.get("*", (req, res) => {
-    res.sendFile(path.join(__dirname, "frontend", "build", "index.html"));
+    res.sendFile(path.join(frontendPath, "index.html"));
   });
 }
 
@@ -65,17 +79,20 @@ mongoose
 // ================================
 // EMAIL TRANSPORT
 // ================================
-function createTransporter() {
+export function createTransporter() {
   return nodemailer.createTransport({
     host: process.env.SMTP_HOST || "smtp.gmail.com",
     port: Number(process.env.SMTP_PORT) || 587,
     secure: false,
-    auth: { user: process.env.MAIL_USER, pass: process.env.MAIL_PASS },
+    auth: {
+      user: process.env.MAIL_USER,
+      pass: process.env.MAIL_PASS,
+    },
   });
 }
 
 // ================================
-// ENVIO WHATSAPP (LEGACY PARA TESTES)
+// WHATSAPP LEGACY
 // ================================
 async function sendWhatsAppLegacy(to, body) {
   if (!process.env.WHAPI_TOKEN)
@@ -95,9 +112,10 @@ async function sendWhatsAppLegacy(to, body) {
         },
       }
     );
+
     return response.data;
   } catch (err) {
-    console.error("❌ Erro WHAPI (legacy):", err.response?.data || err.message);
+    console.error("❌ Erro WhatsApp:", err.response?.data || err.message);
     throw new Error("Falha ao enviar WhatsApp");
   }
 }
@@ -120,7 +138,7 @@ app.post("/api/send-whatsapp", async (req, res) => {
       attempts: 0,
     });
 
-    sendWithRetry(log._id).catch((e) => console.error(e.message));
+    sendWithRetry(log._id).catch(console.error);
 
     return res.json({ ok: true, logId: log._id });
   } catch (err) {
@@ -129,7 +147,7 @@ app.post("/api/send-whatsapp", async (req, res) => {
 });
 
 // ================================
-// CRUD TODO (original do seu projeto)
+// CRUD TODO
 // ================================
 app.get("/todos", async (req, res) => {
   const todos = await Todo.find().sort({ createdAt: -1 });
@@ -154,10 +172,10 @@ app.delete("/todos/:id", async (req, res) => {
 });
 
 // ================================
-// SCHEDULER - EXECUTA A CADA MINUTO
+// SCHEDULER — roda a cada minuto
 // ================================
 cron.schedule("* * * * *", async () => {
-  console.log("⏰ Scheduler rodando...");
+  console.log("⏰ Scheduler executando...");
 
   try {
     const now = new Date();
@@ -174,10 +192,14 @@ cron.schedule("* * * * *", async () => {
         const log = await DeliveryLog.create({
           channel: "email",
           to: t.email,
-          payload: { subject: `Lembrete: ${t.title}`, body: msg },
+          payload: {
+            subject: `Lembrete: ${t.title}`,
+            body: msg,
+          },
           status: "pending",
           attempts: 0,
         });
+
         sendWithRetry(log._id);
       }
 
@@ -190,6 +212,7 @@ cron.schedule("* * * * *", async () => {
           status: "pending",
           attempts: 0,
         });
+
         sendWithRetry(log._id);
       }
 
@@ -205,4 +228,7 @@ cron.schedule("* * * * *", async () => {
 // START SERVER
 // ================================
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`🚀 Servidor rodando na porta ${PORT}`));
+app.listen(PORT, () =>
+  console.log(`🚀 Servidor rodando na porta ${PORT}`)
+);
+
