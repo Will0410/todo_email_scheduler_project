@@ -6,7 +6,7 @@
     "frontend"
   ],
   "scripts": {
-    "build": "cd frontend && npm install && npm run build",
+    "build": "echo Skipped frontend build (Frontend B - build locally)",
     "start": "cd backend && npm install && npm start"
   }
 }

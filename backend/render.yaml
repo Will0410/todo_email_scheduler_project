@@ -1,14 +1,16 @@
 services:
   - type: web
-    name: todo-fullstack
+    name: todo-backend
     env: node
     plan: free
-    buildCommand: npm run build
-    startCommand: npm run start
+    buildCommand: "cd backend && npm install"
+    startCommand: "cd backend && npm start"
     envVars:
       - key: MONGO_URI
-        sync: false
-      - key: EMAIL_USER
-        sync: false
-      - key: EMAIL_PASS
-        sync: false
+      - key: MAIL_USER
+      - key: MAIL_PASS
+      - key: SMTP_HOST
+      - key: SMTP_PORT
+      - key: WHAPI_TOKEN
+      - key: GROQ_API_KEY
+      - key: OTHER_API_KEYS
